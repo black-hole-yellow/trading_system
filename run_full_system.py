@@ -8,9 +8,9 @@ root = Path(__file__).resolve().parent
 sys.path.insert(0, str(root))
 
 from src.data.storage_engine import ParquetStorageEngine
-from src.alpha.monday_reversion import MondayReversionStrategy
+from src.alpha.weekly_continuation import WeeklyContinuationStrategy
 from src.backtest.engine import BacktestEngine
-from src.backtest.visualizer import TearsheetVisualizer # Import the new visualizer
+from src.backtest.visualizer import TearsheetVisualizer 
 
 def run():
     print("=== QUANT LAB ALPHA PIPELINE ===")
@@ -20,7 +20,7 @@ def run():
     output_dir.mkdir(exist_ok=True) # Creates the folder if it doesn't exist
     
     # 2. Load Hypothesis
-    hypothesis_path = root / "config" / "hypotheses" / "monday_gap_reversion.json"
+    hypothesis_path = root / "config" / "hypotheses" / "weekly_level_continuation.json"
     with open(hypothesis_path, 'r') as f:
         config = json.load(f)
         
@@ -33,11 +33,11 @@ def run():
     print("\n[Pillar 1] Fetching Data...")
     processed_dir = root / "data" / "processed"
     storage = ParquetStorageEngine(processed_dir=str(processed_dir))
-    df = storage.load(symbol=symbol, timeframe="15m", start_year=2023, end_year=2026)
+    df = storage.load(symbol=symbol, timeframe="15m", start_year=2000, end_year=2026)
 
     # 4. Generate Signals
     print("\n[Pillar 2] Generating Alpha Signals...")
-    strategy = MondayReversionStrategy(config)
+    strategy = WeeklyContinuationStrategy(config)
     signals = strategy.generate_signals(df)
 
     # 5. Run Backtest (Now returns 3 items)

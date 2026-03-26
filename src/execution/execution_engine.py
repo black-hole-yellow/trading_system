@@ -75,10 +75,10 @@ class ExecutionEngine:
         # Apply Slippage: You always get a slightly worse price than the raw mid-price
         if units_to_trade > 0:  # Buying: Pay the Ask (Higher)
             fill_price = current_price + slippage_value
-            action = "Buy"
+            action = "BUY"
         else:                   # Selling: Hit the Bid (Lower)
             fill_price = current_price - slippage_value
-            action = "Sell"
+            action = "SELL"
 
         # Calculate exact transaction costs
         commission = abs(units_to_trade) * self.commission_per_unit

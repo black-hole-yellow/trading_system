@@ -29,17 +29,23 @@ class BacktestEngine:
         # Grab SL and TP arrays
         sl_prices = signals['sl_price'].values
         tp_prices = signals['tp_price'].values
+
+        exact_exit_prices = signals.get('exact_exit_price', pd.Series(np.nan, index=df.index)).values
         
         for i in range(len(timestamps)):
             timestamp = timestamps[i]
-            current_price = closes[i]
+            
+            # THE FIX: If the strategy triggered a Limit/Stop exit, override the candle Close price!
+            if not np.isnan(exact_exit_prices[i]):
+                current_price = exact_exit_prices[i]
+            else:
+                current_price = closes[i]
             
             current_prices = {symbol: current_price}
             signal_dict = {symbol: target_positions[i]}
             
             target_weights = self.portfolio_manager.generate_target_weights(signal_dict)
             
-            # Pass sl and tp into process_weights
             self.execution_engine.process_weights(
                 target_weights, current_prices, timestamp, sl_prices[i], tp_prices[i]
             )
@@ -88,10 +94,10 @@ class BacktestEngine:
                     exit_time = to_kyiv(exit_trade['timestamp'])
                     
                     if entry['action'] == 'BUY':
-                        pnl = (exit_trade['fill_price'] - entry['fill_price']) * entry['units']
+                        pnl = (row['fill_price'] - entry['fill_price']) * entry['units']
                         direction = 'Long'
                     else:
-                        pnl = (entry['fill_price'] - exit_trade['fill_price']) * entry['units']
+                        pnl = (entry['fill_price'] - row['fill_price']) * entry['units']
                         direction = 'Short'
                         
                     commission = entry['commission'] + exit_trade['commission']
