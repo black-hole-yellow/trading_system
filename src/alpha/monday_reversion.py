@@ -8,7 +8,7 @@ class MondayReversionStrategy(BaseStrategy):
     Uses the BaseStrategy Exit Engine for ATR stops, Dynamic RR, and Time Stops.
     """
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
-        # 1. Roll up to 1H for feature calculation AND exit evaluation
+        # 1. Roll up to 1H ONLY for feature calculation
         df_1h = df.resample('1h', closed='left', label='left').agg({
             'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
         }).dropna()
@@ -21,22 +21,12 @@ class MondayReversionStrategy(BaseStrategy):
         raw_signals_1h.loc[df_1h['Monday_Reversion_Long'] == 1] = 1.0
         raw_signals_1h.loc[df_1h['Monday_Reversion_Short'] == 1] = -1.0
         
-        # 4. Pass the 1H data directly to the Universal Exit Engine!
-        # This evaluates the Highs/Lows of the 1H candles, which is vastly faster.
-        # (Note: We removed the *4 multiplier for max_hold_bars because we are back on 1H time)
-        executed_1h = self.apply_exits(df_1h, raw_signals_1h)
+        # 4. THE FIX: Map to the 15m grid BEFORE running Exits.
+        # This locks the SL and TP math to the exact 15m Entry Price.
+        raw_signals_15m = raw_signals_1h.reindex(df.index).fillna(0.0)
         
-        # 5. Map the finalized 1H target positions and SL/TP back down to the 15m execution grid
-        signals_15m = pd.DataFrame(index=df.index)
+        # 5. Pass the 15m data directly to the high-performance Exit Engine
+        executed_15m = self.apply_exits(df, raw_signals_15m)
         
-        # Forward fill the state so the 15m engine knows exactly what to hold and where the stops are
-        signals_15m['target_position'] = executed_1h['target_position'].reindex(df.index).ffill().fillna(0.0)
-        signals_15m['sl_price'] = executed_1h['sl_price'].reindex(df.index).ffill()
-        signals_15m['tp_price'] = executed_1h['tp_price'].reindex(df.index).ffill()
-        
-        # Safety cleanup: If target position is 0, ensure SL/TP are NaN so we don't accidentally exit future trades
-        is_flat = signals_15m['target_position'] == 0.0
-        signals_15m.loc[is_flat, 'sl_price'] = float('nan')
-        signals_15m.loc[is_flat, 'tp_price'] = float('nan')
-        
-        return signals_15m[['target_position', 'sl_price', 'tp_price']]
+        # Return the finalized signals
+        return executed_15m[['target_position', 'sl_price', 'tp_price']]

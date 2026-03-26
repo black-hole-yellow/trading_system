@@ -59,22 +59,31 @@ class BacktestEngine:
         max_drawdown_pct = drawdown.min() * 100 if not drawdown.empty else 0.0
 
         # === ROUND TRIP TRADE BUILDER ===
+        import pytz
         kyiv_tz = pytz.timezone('Europe/Kyiv')
         closed_trades = []
         
         if not trades.empty:
-            # Pair every Entry (i-1) with its Exit (i)
-            for i in range(1, len(trades), 2):
-                if i < len(trades):
-                    entry = trades.iloc[i-1]
-                    exit_trade = trades.iloc[i]
+            def to_kyiv(ts):
+                if ts.tz is None: 
+                    return ts.tz_localize('UTC').tz_convert(kyiv_tz)
+                return ts.tz_convert(kyiv_tz)
+
+            # State tracker for open positions
+            open_positions = {}
+            
+            for i in range(len(trades)):
+                row = trades.iloc[i]
+                sym = row['symbol']
+                
+                # If we don't have an open trade for this symbol, this is an ENTRY
+                if sym not in open_positions:
+                    open_positions[sym] = row
+                else:
+                    # If we DO have an open trade, this is an EXIT
+                    entry = open_positions[sym]
+                    exit_trade = row
                     
-                    # Convert timestamps safely to Kyiv time for the CSV
-                    def to_kyiv(ts):
-                        if ts.tz is None: 
-                            return ts.tz_localize('UTC').tz_convert(kyiv_tz)
-                        return ts.tz_convert(kyiv_tz)
-                        
                     entry_time = to_kyiv(entry['timestamp'])
                     exit_time = to_kyiv(exit_trade['timestamp'])
                     
@@ -87,22 +96,25 @@ class BacktestEngine:
                         
                     commission = entry['commission'] + exit_trade['commission']
                     net_pnl = pnl - commission
-                    result = 'Win' if net_pnl > 0 else 'Loss'
+                    result_str = 'Win' if net_pnl > 0 else 'Loss'
                     
                     closed_trades.append({
                         'Entry Time (Kyiv)': entry_time.strftime('%Y-%m-%d %H:%M:%S'),
                         'Exit Time (Kyiv)': exit_time.strftime('%Y-%m-%d %H:%M:%S'),
-                        'Symbol': entry['symbol'],
+                        'Symbol': sym,
                         'Direction': direction,
                         'Units': entry['units'],
                         'Entry Price': entry['fill_price'],
                         'Exit Price': exit_trade['fill_price'],
-                        'Stop Loss (SL)': entry.get('sl_price'),
-                        'Take Profit (TP)': entry.get('tp_price'),
+                        'Stop Loss (SL)': entry.get('sl_price'), # Safely pulled from ENTRY
+                        'Take Profit (TP)': entry.get('tp_price'), # Safely pulled from ENTRY
                         'Commission': commission,
                         'Net PnL': round(net_pnl, 2),
-                        'Result': result
+                        'Result': result_str
                     })
+                    
+                    # Clear the state for the next trade
+                    del open_positions[sym]
                     
             closed_trades_df = pd.DataFrame(closed_trades)
             

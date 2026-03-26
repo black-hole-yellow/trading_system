@@ -28,25 +28,21 @@ class BaseStrategy(ABC):
     def apply_exits(self, df: pd.DataFrame, raw_signals: pd.Series) -> pd.DataFrame:
         import numpy as np
         
-        # 1. Calculate Volatility (14-period ATR)
         tr1 = df['high'] - df['low']
         tr2 = (df['high'] - df['close'].shift(1)).abs()
         tr3 = (df['low'] - df['close'].shift(1)).abs()
         true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         atr = true_range.rolling(14).mean()
 
-        # 2. Extract Config parameters
         atr_multiplier = self.execution.get('atr_sl_multiplier', 1.5)
         use_time_filter = self.execution.get('use_time_filter', False)
 
-        # 3. Timezone handling for the Time Filter
         import pytz
         if df.index.tz is None:
             kyiv_time = df.index.tz_localize('UTC').tz_convert('Europe/Kyiv')
         else:
             kyiv_time = df.index.tz_convert('Europe/Kyiv')
 
-        # 4. Extract to NumPy Arrays for Maximum Speed
         signals_arr = raw_signals.values
         closes_arr = df['close'].values
         highs_arr = df['high'].values
@@ -56,8 +52,6 @@ class BaseStrategy(ABC):
         hours_arr = kyiv_time.hour.values
         
         n = len(df)
-        
-        # Pre-allocate result lists
         target_positions = [0.0] * n
         sl_prices = [np.nan] * n
         tp_prices = [np.nan] * n
@@ -66,7 +60,6 @@ class BaseStrategy(ABC):
         sl_price = 0.0
         tp_price = 0.0
 
-        # 5. Fast Execution Loop
         for i in range(n):
             signal = signals_arr[i]
             current_close = closes_arr[i]
@@ -76,45 +69,41 @@ class BaseStrategy(ABC):
             current_day = days_arr[i]
             kyiv_hour = hours_arr[i]
 
-            # --- STRICT EXIT LOGIC (SL OR TP ONLY) ---
-            if current_position != 0:
-                if current_position == 1.0:
-                    if current_low <= sl_price or current_high >= tp_price:
-                        current_position = 0.0
-                elif current_position == -1.0:
-                    if current_high >= sl_price or current_low <= tp_price:
-                        current_position = 0.0
+            # --- EXIT LOGIC ---
+            if current_position > 0: # LONG
+                if current_low <= sl_price or current_high >= tp_price:
+                    current_position = 0.0
+            elif current_position < 0: # SHORT
+                if current_high >= sl_price or current_low <= tp_price:
+                    current_position = 0.0
 
             # --- ENTRY LOGIC ---
             if current_position == 0 and signal != 0 and not np.isnan(current_atr):
                 
-                # Apply Time Filter if enabled (London Open to 18:00 UA)
                 if use_time_filter and not (10 <= kyiv_hour < 18):
-                    pass # Skip the trade
+                    pass
                 else:
                     current_position = float(signal)
-                    sl_dist = current_atr * atr_multiplier
                     
-                    # STRICT RR LOGIC: 3RR strictly on Thursdays (day 3), exactly 2RR all other days
+                    # Force absolute positive distances
+                    sl_dist = abs(current_atr * atr_multiplier)
                     rr_ratio = 3.0 if current_day == 3 else 2.0
-                    tp_dist = sl_dist * rr_ratio
+                    tp_dist = abs(sl_dist * rr_ratio)
                     
-                    if current_position == 1.0:
+                    # Explicit mapping
+                    if current_position > 0: # LONG
                         sl_price = current_close - sl_dist
                         tp_price = current_close + tp_dist
-                    else:
+                    elif current_position < 0: # SHORT
                         sl_price = current_close + sl_dist
                         tp_price = current_close - tp_dist
 
-            # Save state for this bar
             target_positions[i] = current_position
             sl_prices[i] = sl_price if current_position != 0 else np.nan
             tp_prices[i] = tp_price if current_position != 0 else np.nan
 
-        # 6. Construct Final DataFrame
         result = pd.DataFrame(index=df.index)
         result['target_position'] = target_positions
         result['sl_price'] = sl_prices
         result['tp_price'] = tp_prices
-        
         return result
