@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Dict, Any
+import pytz
 
 class BaseStrategy(ABC):
     def __init__(self, config: Dict[str, Any]):
@@ -25,77 +26,94 @@ class BaseStrategy(ABC):
         return mtf_aligned
 
     def apply_exits(self, df: pd.DataFrame, raw_signals: pd.Series) -> pd.DataFrame:
-        """
-        The Universal Exit Engine.
-        Applies ATR-based Stops, Dynamic RR Targets, and Time Stops.
-        """
-        # 1. Calculate Universal 14-Period ATR for volatility
+        import numpy as np
+        
         tr1 = df['high'] - df['low']
         tr2 = (df['high'] - df['close'].shift(1)).abs()
         tr3 = (df['low'] - df['close'].shift(1)).abs()
         true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         atr = true_range.rolling(14).mean()
 
-        # 2. Extract Execution Config
         max_hold_bars = self.execution.get('max_hold_bars', 5)
         atr_multiplier = self.execution.get('atr_sl_multiplier', 1.5)
+        use_time_filter = self.execution.get('use_time_filter', False)
 
-        # 3. State Tracking Variables
+        import pytz
+        if df.index.tz is None:
+            kyiv_time = df.index.tz_localize('UTC').tz_convert('Europe/Kyiv')
+        else:
+            kyiv_time = df.index.tz_convert('Europe/Kyiv')
+
+        # === THE FIX: Extract everything to lightning-fast NumPy Arrays ===
+        signals_arr = raw_signals.values
+        closes_arr = df['close'].values
+        highs_arr = df['high'].values
+        lows_arr = df['low'].values
+        atr_arr = atr.values
+        days_arr = df.index.dayofweek.values
+        hours_arr = kyiv_time.hour.values
+        
+        n = len(df)
+        # Pre-allocate result lists for maximum speed
+        target_positions = [0.0] * n
+        sl_prices = [np.nan] * n
+        tp_prices = [np.nan] * n
+
         current_position = 0.0
         sl_price = 0.0
         tp_price = 0.0
         bars_held = 0
-        target_positions = []
 
-        # 4. The Execution Loop
-        for i in range(len(df)):
-            signal = raw_signals.iloc[i]
-            current_close = df['close'].iloc[i]
-            current_atr = atr.iloc[i]
-            
-            # Pandas dayofweek: Monday=0, Tuesday=1, Wednesday=2, Thursday=3
-            current_day = df.index[i].dayofweek 
+        # Now we loop over raw arrays, which takes milliseconds instead of minutes
+        for i in range(n):
+            signal = signals_arr[i]
+            current_close = closes_arr[i]
+            current_high = highs_arr[i]
+            current_low = lows_arr[i]
+            current_atr = atr_arr[i]
+            current_day = days_arr[i]
+            kyiv_hour = hours_arr[i]
 
             # --- EXIT LOGIC ---
             if current_position != 0:
                 bars_held += 1
                 
-                # Exit 1: Time Stop
                 if bars_held >= max_hold_bars:
                     current_position = 0.0
-                
-                # Exit 2: Hard Stop Loss & Take Profit
                 elif current_position == 1.0:
-                    if current_close <= sl_price or current_close >= tp_price:
+                    if current_low <= sl_price or current_high >= tp_price:
                         current_position = 0.0
                 elif current_position == -1.0:
-                    if current_close >= sl_price or current_close <= tp_price:
+                    if current_high >= sl_price or current_low <= tp_price:
                         current_position = 0.0
 
             # --- ENTRY LOGIC ---
-            if current_position == 0 and signal != 0 and pd.notna(current_atr):
-                current_position = signal
-                bars_held = 0
+            if current_position == 0 and signal != 0 and not np.isnan(current_atr):
                 
-                # Calculate Stop Loss Distance
-                sl_dist = current_atr * atr_multiplier
-                
-                # Calculate Take Profit Distance (Dynamic RR)
-                # If Thursday (3), use 3RR. Otherwise use 2RR.
-                rr_ratio = 3.0 if current_day == 3 else 2.0
-                tp_dist = sl_dist * rr_ratio
-                
-                # Set specific price levels
-                if current_position == 1.0:
-                    sl_price = current_close - sl_dist
-                    tp_price = current_close + tp_dist
+                if use_time_filter and not (10 <= kyiv_hour < 18):
+                    pass # Do nothing, skip the trade
                 else:
-                    sl_price = current_close + sl_dist
-                    tp_price = current_close - tp_dist
+                    current_position = float(signal)
+                    bars_held = 0
+                    sl_dist = current_atr * atr_multiplier
+                    rr_ratio = 3.0 if current_day == 3 else 2.0
+                    tp_dist = sl_dist * rr_ratio
+                    
+                    if current_position == 1.0:
+                        sl_price = current_close - sl_dist
+                        tp_price = current_close + tp_dist
+                    else:
+                        sl_price = current_close + sl_dist
+                        tp_price = current_close - tp_dist
 
-            target_positions.append(current_position)
+            # Save state for this bar
+            target_positions[i] = current_position
+            sl_prices[i] = sl_price if current_position != 0 else np.nan
+            tp_prices[i] = tp_price if current_position != 0 else np.nan
 
-        # Return a DataFrame with the final positions
+        # Construct final dataframe
         result = pd.DataFrame(index=df.index)
         result['target_position'] = target_positions
+        result['sl_price'] = sl_prices
+        result['tp_price'] = tp_prices
         return result
